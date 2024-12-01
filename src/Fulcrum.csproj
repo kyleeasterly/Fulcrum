@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>66c25bf7-ac8e-42bd-b5de-ca68cbfeb013</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Anthropic.SDK" Version="4.4.1" />
+    <PackageReference Include="MudBlazor" Version="7.15.0" />
+  </ItemGroup>
+
+</Project>

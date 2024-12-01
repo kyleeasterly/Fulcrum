@@ -1,0 +1,52 @@
+﻿@using System.IO
+
+<MudTreeViewItem T="string" 
+                 Value="@Path"
+                 Text="@System.IO.Path.GetFileName(Path)"
+                 Icon="@GetIcon()"
+                 IconExpanded="@GetExpandedIcon()">
+    @if (Directory.Exists(Path))
+    {
+        @foreach (var childPath in GetSortedChildren())
+        {
+            <FileTreeItem Path="@childPath" RootPath="@RootPath" />
+        }
+    }
+</MudTreeViewItem>
+
+@code {
+    [Parameter] public string Path { get; set; } = string.Empty;
+    [Parameter] public string RootPath { get; set; } = string.Empty;
+
+    private string GetIcon()
+    {
+        return Directory.Exists(Path) 
+            ? Icons.Material.Filled.Folder 
+            : Icons.Material.Filled.InsertDriveFile;
+    }
+
+    private string? GetExpandedIcon()
+    {
+        return Directory.Exists(Path) 
+            ? Icons.Material.Filled.FolderOpen 
+            : null;
+    }
+
+    private IEnumerable<string> GetSortedChildren()
+    {
+        if (!Directory.Exists(Path)) return Enumerable.Empty<string>();
+
+        var children = new List<string>();
+        try
+        {
+            children.AddRange(Directory.GetDirectories(Path));
+            children.AddRange(Directory.GetFiles(Path));
+            children.Sort();
+        }
+        catch (Exception)
+        {
+            // Handle or log access errors
+        }
+        return children;
+    }
+}

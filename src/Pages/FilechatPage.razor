@@ -1,0 +1,149 @@
+﻿@page "/filechat"
+@using Anthropic.SDK.Messaging
+@using Fulcrum.Components.Filechat
+@using System.IO
+@using System.Text
+@inject AnthropicApiService _anthropicApiService
+
+<MudText Typo="Typo.h3">Filechat</MudText>
+
+<MudStack Row="true" StretchItems="StretchItems.End">
+    <MudStack>
+        <MudTextField @bind-Value="_rootPath" Label="Root Path" Variant="Variant.Outlined" />
+        <MudNumericField @bind-Value="_maxTokens" HideSpinButtons="true" Label="Max tokens" Max="4096" Min="1" Variant="Variant.Outlined" />
+        <MudNumericField @bind-Value="_temperature" HideSpinButtons="true" Label="Temperature" Max="1.0m" Min="0.0m" Step="0.1m" Variant="Variant.Outlined" />
+        <MudButton OnClick="LoadFiles" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh" Variant="Variant.Filled">Load Files</MudButton>
+        <MudButton OnClick="Start" Color="Color.Success" StartIcon="@Icons.Material.Filled.PlayArrow" Variant="Variant.Filled">Start</MudButton>
+        <MudButton OnClick="Stop" Color="Color.Error" StartIcon="@Icons.Material.Filled.Stop" Variant="Variant.Filled">Stop</MudButton>
+    </MudStack>
+    <MudStack>
+        <MudStack Row="true">
+            <MudTextField @bind-Value="_systemPrompt" Label="System prompt" Lines="12" Variant="Variant.Outlined" />
+            <MudTextField @bind-Value="_taskInstructions" Label="Task instructions" Lines="12" Variant="Variant.Outlined" />
+        </MudStack>
+        <MudStack Row="true">
+            <MudStack>
+                <MudText Typo="Typo.caption">Selected files</MudText>
+                <MudText Typo="Typo.body1">@(SelectedValues?.Count ?? 0)</MudText>
+            </MudStack>
+            <MudStack>
+                <MudText Typo="Typo.caption">Status</MudText>
+                <MudText Typo="Typo.body1">@_statusMessage</MudText>
+            </MudStack>
+        </MudStack>
+    </MudStack>
+</MudStack>
+
+<MudGrid>
+    <MudItem xs="4">
+        <MudPaper Class="pa-4" Elevation="2">
+            <MudTreeView T="string" @bind-SelectedValues="SelectedValues"
+                         SelectionMode="SelectionMode.MultiSelection" 
+                        TriState="true">
+                @foreach (var item in _rootItems)
+                {
+                    <FileTreeItem Path="@item" RootPath="@_rootPath" />
+                }
+            </MudTreeView>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="8">
+        @if (!string.IsNullOrEmpty(_streamingMessage))
+        {
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.caption">Response</MudText>
+                <MudText Typo="Typo.body1">@_streamingMessage</MudText>
+            </MudPaper>
+        }
+    </MudItem>
+</MudGrid>
+
+@code {
+    private string _rootPath = string.Empty;
+    private int _maxTokens = 1024;
+    private decimal _temperature = 0.0m;
+    private string _systemPrompt = string.Empty;
+    private string _taskInstructions = string.Empty;
+    private string _streamingMessage = string.Empty;
+    private List<string> _rootItems = new();
+    private List<string> _treeItems = new();
+    public IReadOnlyCollection<string> SelectedValues = [];
+    private CancellationTokenSource _cancellationTokenSource = new();
+    private string _statusMessage = string.Empty;
+
+    private void LoadFiles()
+    {
+        if (string.IsNullOrWhiteSpace(_rootPath) || !Directory.Exists(_rootPath))
+        {
+            _statusMessage = "Invalid root path";
+            return;
+        }
+
+        _rootItems.Clear();
+        SelectedValues = [];
+
+        // Add immediate children of root path
+        _rootItems.AddRange(Directory.GetDirectories(_rootPath));
+        _rootItems.AddRange(Directory.GetFiles(_rootPath));
+        _rootItems.Sort();
+
+        _statusMessage = "Files loaded";
+    }
+
+    private async Task Start()
+    {
+        if (SelectedValues.Count == 0)
+        {
+            _statusMessage = "No files selected";
+            return;
+        }
+
+        _cancellationTokenSource = new CancellationTokenSource();
+        _streamingMessage = string.Empty;
+
+        // Build the input by wrapping each selected file's contents in XML tags
+        var sortedPaths = SelectedValues.Where(File.Exists).OrderBy(p => p).ToList();
+        var fileContents = new StringBuilder();
+
+        foreach (string path in sortedPaths)
+        {
+            try
+            {
+                string relativePath = Path.GetRelativePath(_rootPath, path);
+                string content = await File.ReadAllTextAsync(path);
+                fileContents.AppendLine($"<{relativePath}>");
+                fileContents.AppendLine(content);
+                fileContents.AppendLine($"</{relativePath}>");
+            }
+            catch (Exception ex)
+            {
+                _statusMessage = $"Error reading {path}: {ex.Message}";
+                return;
+            }
+        }
+
+        // Wrap task instructions and combine with file contents
+        string finalPrompt = fileContents.ToString() + "\n<task>\n" + _taskInstructions + "\n</task>";
+
+        Console.WriteLine(finalPrompt);
+
+        var messages = new List<Message> { new Message(RoleType.User, finalPrompt) };
+
+        await foreach (MessageResponse chunk in _anthropicApiService.StreamResponse(
+            messages, _maxTokens, _systemPrompt, _temperature))
+        {
+            if (chunk.Delta == null) continue;
+            _streamingMessage += chunk.Delta.Text;
+            _statusMessage = "Streaming response...";
+            await InvokeAsync(StateHasChanged);
+        }
+
+        _statusMessage = "Complete";
+    }
+
+    private void Stop()
+    {
+        _cancellationTokenSource.Cancel();
+        _statusMessage = "Stopped";
+    }
+}

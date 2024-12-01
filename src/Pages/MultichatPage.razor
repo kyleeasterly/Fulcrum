@@ -1,0 +1,135 @@
+﻿@page "/multichat"
+@using Anthropic.SDK.Messaging
+@using Fulcrum.Models.Multichat
+@inject AnthropicApiService _anthropicApiService
+
+<MudText Typo="Typo.h3">Multichat</MudText>
+
+<MudStack Row="true" StretchItems="StretchItems.End">
+    <MudStack>
+        <MudNumericField @bind-Value="_maxMessages" HideSpinButtons="true" Label="Max messages" Max="int.MaxValue" Min="0" Variant="Variant.Outlined" />
+        <MudNumericField @bind-Value="_maxTokens1" HideSpinButtons="true" Label="Max tokens 1" Max="4096" Min="1" Variant="Variant.Outlined" />
+        <MudNumericField @bind-Value="_maxTokens2" HideSpinButtons="true" Label="Max tokens 2" Max="4096" Min="1" Variant="Variant.Outlined" />
+        <MudNumericField @bind-Value="_temperature" HideSpinButtons="true" Label="Temperature" Max="1.0m" Min="0.0m" Step="0.1m" Variant="Variant.Outlined" />
+        <MudButton OnClick="Start" Color="Color.Success" StartIcon="@Icons.Material.Filled.PlayArrow" Variant="Variant.Filled">Start</MudButton>
+        <MudButton OnClick="Stop" Color="Color.Error" StartIcon="@Icons.Material.Filled.Stop" Variant="Variant.Filled">Stop</MudButton>
+    </MudStack>
+    <MudStack>
+        <MudStack Row="true">
+            <MudTextField @bind-Value="_systemPrompt1" Label="System prompt 1" Lines="12" Variant="Variant.Outlined" />
+            <MudTextField @bind-Value="_systemPrompt2" Label="System prompt 2" Lines="12" Variant="Variant.Outlined" />
+            <MudTextField @bind-Value="_initialMessage" Label="Initial message" Lines="12" Variant="Variant.Outlined" />
+        </MudStack>
+        <MudStack Row="true">
+            <MudStack>
+                <MudText Typo="Typo.caption">Requests remaining / limit</MudText>
+                <MudText Typo="Typo.body1">@_requestsRemaining / @_requestsLimit</MudText>
+            </MudStack>
+            <MudStack>
+                <MudText Typo="Typo.caption">Tokens remaining / limit</MudText>
+                <MudText Typo="Typo.body1">@_tokensRemaining / @_tokensLimit</MudText>
+            </MudStack>
+            <MudStack>
+                <MudText Typo="Typo.caption">Tokens in / out</MudText>
+                <MudText Typo="Typo.body1">@_inputTokens / @_outputTokens</MudText>
+            </MudStack>
+            <MudStack>
+                <MudText Typo="Typo.caption">Status</MudText>
+                <MudText Typo="Typo.body1">@_statusMessage</MudText>
+            </MudStack>
+        </MudStack>
+    </MudStack>
+</MudStack>
+
+@foreach (MultichatMessage message in _displayMessages)
+{
+    <MudPaper Class="my-4 pa-4" Elevation="6">
+        <MudText Typo="Typo.caption">Instance @message.ParticipantNumber</MudText>
+        <MudText Typo="Typo.body1">@message.Message</MudText>
+    </MudPaper>
+}
+
+@if (!string.IsNullOrEmpty(_streamingMessage))
+{
+    <MudPaper Class="my-4 pa-4" Elevation="6">
+        <MudText Typo="Typo.caption">Streaming...</MudText>
+        <MudText Typo="Typo.body1">@_streamingMessage</MudText>
+    </MudPaper>
+}
+
+@code
+{
+    int _maxTokens1 = 1024;
+    int _maxTokens2 = 1024;
+    decimal _temperature = 0.0m;
+    string _systemPrompt1 = string.Empty;
+    string _systemPrompt2 = string.Empty;
+    string _initialMessage = string.Empty;
+
+    List<Message> _messages1 = new List<Message>();
+    List<Message> _messages2 = new List<Message>();
+    string _streamingMessage = string.Empty;
+    List<MultichatMessage> _displayMessages = new List<MultichatMessage>();
+
+    int _maxMessages = 0;
+    CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
+
+    long _requestsLimit = -1;
+    long _requestsRemaining = -1;
+    long _tokensLimit = -1;
+    long _tokensRemaining = -1;
+    int _inputTokens = -1;
+    int _outputTokens = -1;
+    string _statusMessage = string.Empty;
+
+    private async Task Start()
+    {
+        _cancellationTokenSource = new CancellationTokenSource();
+        _displayMessages.Clear();
+        _messages1.Clear();
+        _messages2.Clear();
+
+        _messages1.Add(new Message(RoleType.User, _initialMessage));
+        _displayMessages.Add(new MultichatMessage { Message = _initialMessage });
+
+        int currentParticipant = 1;
+
+        while (!_cancellationTokenSource.Token.IsCancellationRequested && (_maxMessages == 0 || _displayMessages.Count < _maxMessages))
+        {
+            await foreach (MessageResponse chunk in currentParticipant == 1
+                ? _anthropicApiService.StreamResponse(_messages1, _maxTokens1, _systemPrompt1, _temperature)
+                : _anthropicApiService.StreamResponse(_messages2, _maxTokens2, _systemPrompt2, _temperature))
+            {
+                if (chunk.Delta == null) continue;
+                _streamingMessage += chunk.Delta.Text;
+                _requestsLimit = chunk.RateLimits.RequestsLimit ?? -1;
+                _requestsRemaining = chunk.RateLimits.RequestsRemaining ?? -1;
+                _tokensLimit = chunk.RateLimits.TokensLimit ?? -1;
+                _tokensRemaining = chunk.RateLimits.TokensRemaining ?? -1;
+                _statusMessage = $"Streaming instance {currentParticipant}...";
+                await InvokeAsync(StateHasChanged);
+
+                if ((_requestsRemaining > -1 && _requestsRemaining < 5) || (_tokensRemaining > -1 && _tokensRemaining < 4000))
+                {
+                    _statusMessage = "Waiting 30 seconds due to rate limits...";
+                    await InvokeAsync(StateHasChanged);
+                    await Task.Delay(30000);
+                }
+            }
+
+            _messages1.Add(new Message(currentParticipant == 1 ? RoleType.Assistant : RoleType.User, _streamingMessage));
+            _messages2.Add(new Message(currentParticipant == 2 ? RoleType.Assistant : RoleType.User, _streamingMessage));
+            _displayMessages.Add(new MultichatMessage { ParticipantNumber = currentParticipant, Message = _streamingMessage });
+            _streamingMessage = string.Empty;
+            currentParticipant = currentParticipant == 1 ? 2 : 1;
+            await InvokeAsync(StateHasChanged);
+        }
+
+        _streamingMessage = string.Empty;
+    }
+
+    private void Stop()
+    {
+        _cancellationTokenSource.Cancel();
+    }
+}
